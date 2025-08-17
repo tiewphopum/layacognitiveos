@@ -1,0 +1,19 @@
+# src/layaos/core/ports.py
+from __future__ import annotations
+from typing import Protocol, AsyncIterator, Any
+import numpy as np
+from layaos.core.contracts import FrameEvent, DetectionEvent
+
+class CameraSource(Protocol):
+    async def frames(self) -> AsyncIterator[FrameEvent]: ...
+
+class MotionDetector(Protocol):
+    def detect(self, frame: np.ndarray) -> DetectionEvent: ...
+
+class StorageSink(Protocol):
+    async def save_event(self, evt: Any) -> None: ...
+    async def save_frame(self, evt: FrameEvent) -> None: ...
+
+class HubClient(Protocol):
+    async def publish(self, topic: str, data: Any) -> None: ...
+    async def subscribe(self, topic: str) -> AsyncIterator[Any]: ...

@@ -1,0 +1,55 @@
+# configs/pipeline.yaml
+bus:
+  daemon: true
+
+detector:
+  module: layaos.vision.motion_fullframe
+  class: MotionFullFrameDetector
+  args:
+    grid: 3
+    ratio_threshold: 0.01
+
+states:
+  - name: s1
+    module: layaos.pipeline.state1_sensor
+    class: State1_Sensor
+    cfg:
+      topic_out: s1.raw
+      fps: 30
+
+  - name: s2
+    module: layaos.pipeline.state2_preproc
+    class: State2_PreProc
+    cfg:
+      topic_in: s1.raw
+      topic_out: s2.pre
+
+  - name: s3
+    module: layaos.pipeline.state3_perception
+    class: State3_Perception
+    cfg:
+      topic_in: s2.pre
+      topic_out: s3.det
+      every_n: 3     # ตรงกับที่ State3_Perception รองรับ
+
+  - name: s4
+    module: layaos.pipeline.state4_context
+    class: State4_Context
+    cfg:
+      topic_in: s3.det
+      topic_out: s4.ctx
+      keep_last: 120
+
+  - name: s5
+    module: layaos.pipeline.state5_imagination
+    class: State5_Imagination
+    cfg:
+      topic_in: s4.ctx
+      topic_out: s5.img
+
+  - name: s6
+    module: layaos.pipeline.state6_action
+    class: State6_Action
+    cfg:
+      topic_in: s5.img
+      topic_out: null

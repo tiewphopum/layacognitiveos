@@ -1,98 +1,56 @@
-# 🌌 LayaCognitiveOS (LCO)
+# LayaOS Motion Pipeline Demo
 
-**"Where cognition follows the rhythm of life."**  
-LayaCognitiveOS (LCO) is an experimental *Cognitive Operating System* designed to **orchestrate** and **operate in rhythm-based cycles**, enabling AI modules to collaborate naturally and efficiently.
-
----
-
-## ✨ Features
-- **6 Cognitive States** – From sensor input to AI-driven decision making.  
-- **Rhythm Engine (LayaCore)** – Each state works on its own *tick-phase cycle*, inspired by brain rhythms.  
-- **Pluggable Components** – Easily add/remove sensors, AI models, or decision modules.  
-- **Buffer-based Data Flow** – Process available data without waiting for the slowest state.  
-- **Multi-camera Ready** – Scale from 1 to N cameras without blocking.  
-- **Metrics & Logging** – Built-in performance logging and metrics collection.  
-
----
-
-## 🧠 Architecture
-
-```
-State1: SensorAndInput
-  Sensor(Camera) → KeyHubComponent → QueueBufferOutputComponent → SenderComponent
-
-State2: PreProcessing
-  ReceiveDataPackage → Dispatcher(Map) → Pipeline → DataPackManager → QueueBuffer → SendDataPackage
-
-State3: Perception
-  ReceiveDataPackage → ObjectDetection/Tracking → ObjectMemory → QueueBuffer → SendDataPackage
-
-State4: ContextAndReasoning
-  SceneUnderstanding → EventCorrelation → MemoryManager (Shared) → QueueBuffer → SendDataPackage
-
-State5: ImaginationReasoning
-  AIPromptBuilder → AIImaginationReasonDispatcher → GPTPipeline → ResultMerger → QueueBuffer → SendDataPackage
-
-State6: DecisionAndAction
-  AIPromptBuilder → AIDecisionAction → ActionScheduler → QueueBuffer → SendDataPackage
-```
-
----
+This repository contains a demo of the **Core Motion Detection Pipeline**  
+for LayaOS. It shows how to capture frames, process them through pipeline
+states (S1–S3), and publish detection events (`s3.det`) into an event bus.
 
 ## 🚀 Quick Start
 
+### Requirements
+- Python 3.11+
+- Dependencies: `pip install -r requirements.txt`
+
+### Run Demo
 ```bash
-git clone https://github.com/YOURNAME/layacognitiveos.git
-cd layacognitiveos
-pip install -r requirements.txt
-
-# Run demo
-python -m tests.test_rhythm
+python scripts/demo_motion.py
 ```
 
----
-
-## 🫀 Why Rhythm?
-
-Instead of forcing all states to wait for each other, we let them follow **their own heartbeat**:  
-- Each state has its **own rhythm** (tick/phase cycle)  
-- They **sync** via shared buffers  
-- If there's nothing in your buffer, you **rest** until the next beat  
-
-This makes the system **smooth, scalable, and adaptive** — just like the natural rhythm of the brain 🧠
-
----
-
-## 📦 Project Structure
+Expected output (20s run):
 
 ```
-src/
-  core/       # Rhythm engine (LayaCore), state machine, base components
-  vision/     # Camera, motion detection, object tracking
-  synth/      # Simulation & synthetic data generators
-  ws/         # WebSocket hub for real-time broadcast
-tests/
-  test_rhythm.py
-  test_fullframe_motion.py
-  ...
+[INFO] demo.motion | demo start: running ~20s
+[DBG] det event keys: ['det', 'motion_ratio', 'ts']
+[DBG] det payload keys: ['ratio', 'ts']
+[INFO] demo.motion | === DEMO SUMMARY ===
+[INFO] demo.motion | det_count=79 avg_ratio=0.0421 p50_e2e_ms=6.82
 ```
 
----
+## 📊 Metrics
+Metrics are exported via the built-in exporter.
 
-## 🪪 License
-This project is licensed under the **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)** License.
+- `demo_e2e_ms` – End-to-end latency (ms) from capture → detection → subscriber
+- `demo_det_total` – Total number of detection events observed
+- `avg_ratio` – Average motion ratio from detections
 
-- ✅ You are free to use, modify, and share this project for **personal, educational, or research purposes**.  
-- ❌ Commercial use of this project (in whole or in part) is **not allowed**.  
-- ℹ️ Any derivative works must also be distributed under the same license, with proper attribution.  
+## 🧩 Pipeline Overview
+- **Camera** – frame generator (`cam`)  
+- **States S1–S3** – preprocessing and motion detection  
+- **Bus** – publish/subscribe backbone  
+- **Subscriber** – `on_det` receives `s3.det` events  
+- **Metrics** – observability with latency, throughput, motion stats  
 
-See the full license text here: [Creative Commons BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+## 📂 Repo Structure
+```
+.
+├── scripts/
+│   └── demo_motion.py
+├── layaos/
+│   └── core/ ...
+├── tests/
+│   └── ...
+└── docs/
+    └── ARCHITECTURE.md
+```
 
----
-
-## 👥 Authors
-- **Pisit Tiewphopum** – System Architect & Lead Developer  
----
-
-> 💡 *This is an experimental project — contributions, ideas, and remixes are welcome!*
-
+## 🔖 Version
+- v0.1 – Core Motion Pipeline Stable

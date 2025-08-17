@@ -1,0 +1,60 @@
+files:
+  # --- Documentation ---
+  - README.md
+  - COMMAND.md
+  - NOTE.md
+  - TODO.md
+  - docs/roadmap.md
+  - docs/tmp/README_EN.md
+  - docs/tmp/README_BILINGUAL.md
+
+  # --- Environment / Config ---
+  - pyproject.toml
+  - requirements.txt
+  - requirements-dev.txt
+  - environment.yml
+  - Makefile
+  - pytest.ini
+  - LICENSE
+
+  # --- Core Layer ---
+  - src/layaos/core/buffer.py
+  - src/layaos/core/bus.py
+  - src/layaos/core/clock.py
+  - src/layaos/core/contracts.py
+  - src/layaos/core/dispatcher.py
+  - src/layaos/core/log.py
+  - src/layaos/core/metrics.py
+
+  # --- Pipeline (processing stages) ---
+  - src/layaos/pipeline/state_base.py
+  - src/layaos/pipeline/state1_sensor.py
+  - src/layaos/pipeline/state2_preproc.py
+  - src/layaos/pipeline/state3_perception.py
+  - src/layaos/pipeline/state4_context.py
+  - src/layaos/pipeline/state5_imagination.py
+  - src/layaos/pipeline/state6_action.py
+  - src/layaos/pipeline/wire_minimal.py
+
+  # --- Adapters ---
+  - src/layaos/adapters/storage.py
+  - src/layaos/adapters/ws_hub.py
+
+  # --- Vision ---
+  - src/layaos/vision/motion_baseline.py
+  - src/layaos/vision/motion_fullframe.py
+
+  # --- Synth (mock input/output) ---
+  - src/layaos/synth/mock_camera.py
+
+  # --- Tools ---
+  - src/layaos/tools/check_dupes.py
+  - scripts/demo_motion.py
+  - tools/summarize_symbols.py
+  - tools/merge_sources.py
+
+  # --- Tests (เลือกบางส่วน ถ้าอยากรวมหมดใส่เพิ่มเองได้) ---
+  - tests/test_bus_flow.py
+  - tests/test_pipeline_min.py
+  - tests/test_motion_pipeline.py
+  - tests/test_orchestra_min.py
