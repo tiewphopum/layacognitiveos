@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Optional, Callable, Any
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.clock import BeatClock
 from layaos.core.metrics import gauge_set, observe_hist
 from layaos.core.log import get as get_logger
@@ -18,7 +18,7 @@ class StateConfig:
     hz: float
 
 class PipelineState:
-    def __init__(self, cfg: StateConfig, bus: InProcEventBus):
+    def __init__(self, cfg: StateConfig, bus: EventBus):
         self.cfg = cfg
         self.bus = bus
         self.clock = BeatClock(hz=cfg.hz)

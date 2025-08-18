@@ -2,7 +2,7 @@ import asyncio
 import time
 import pytest
 
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.contracts import Event
 from layaos.core import log
 
@@ -18,9 +18,9 @@ async def test_backpressure_resilience():
 
     # พยายามตั้ง queue เล็ก ถ้า constructor ไม่รับ maxlen ก็ใช้ค่า default ได้
     try:
-        bus = InProcEventBus(maxlen=64)  # type: ignore[arg-type]
+        bus = EventBus(maxlen=64)  # type: ignore[arg-type]
     except TypeError:  # fallback
-        bus = InProcEventBus()           # type: ignore[call-arg]
+        bus = EventBus()           # type: ignore[call-arg]
 
     bus.start()
 

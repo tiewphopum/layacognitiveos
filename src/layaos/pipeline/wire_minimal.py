@@ -1,7 +1,7 @@
 # src/layaos/pipeline/wire_minimal.py
 from __future__ import annotations
 import asyncio
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.pipeline.state_base import StateConfig
 from layaos.pipeline.state1_sensor import State1_Sensor
 from layaos.pipeline.state2_preproc import State2_PreProc
@@ -18,7 +18,7 @@ from layaos.adapters.storage import LocalEventStorage, StorageConfig
 
 
 def build_pipeline(cam_hz: int = 12):
-    bus = InProcEventBus(maxlen=256)
+    bus = EventBus(maxlen=256)
 
     # สร้าง storage หนึ่งตัวใช้ร่วมกันทั้งท่อ
     storage = LocalEventStorage(StorageConfig(out_dir="data", prefix="evt"))

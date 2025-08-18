@@ -1,7 +1,7 @@
 # tests/test_camera_to_bus.py
 import asyncio
 import pytest
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.synth.mock_camera import MockCamera, MockCamConfig
 from layaos.adapters.storage import LocalEventStorage, StorageConfig
 
@@ -9,11 +9,11 @@ from layaos.adapters.storage import LocalEventStorage, StorageConfig
 def test_camera_to_bus():
     import asyncio
     async def _run():
-        from layaos.core.bus import InProcEventBus
+        from layaos.core.bus import EventBus
         from layaos.synth.mock_camera import MockCamera, MockCamConfig
         from layaos.adapters.storage import LocalEventStorage, StorageConfig
 
-        bus = InProcEventBus(maxlen=128)
+        bus = EventBus(maxlen=128)
         cam = MockCamera(MockCamConfig(width=64, height=48, fps=8), bus=bus, topic_out="cam/0.frame")
         st = LocalEventStorage(StorageConfig(base_dir=".test-out"))
         n = 10

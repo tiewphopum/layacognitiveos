@@ -3,12 +3,12 @@ import threading
 import time
 
 from layaos.core import log
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.clock import BeatClock
 
 def test_graceful_shutdown():
     log.setup("WARNING")
-    bus = InProcEventBus()
+    bus = EventBus()
     bus.start()
     clk = BeatClock(hz=20, name="grace")
 

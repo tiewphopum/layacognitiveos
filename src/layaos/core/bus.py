@@ -8,7 +8,7 @@ from layaos.core import log
 from layaos.core.metrics import inc, gauge_set  # <-- ใช้ฟังก์ชันล้วน
 from layaos.core.contracts import Event
 
-class InProcEventBus:
+class EventBus:
     def __init__(self, name: str = "orchestrai.bus", daemon: bool = True, maxlen: int = 256):
         self.name = name
         self.daemon = daemon

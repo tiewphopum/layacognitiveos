@@ -46,7 +46,7 @@
 - [ ] ตรวจวัด latency ราย state: ใช้ `observe_hist("latency_ms{state=...}", ...)` ในแต่ละสเตตแล้วสรุป p50/p90/p99 【8†source】
 
 ## 4) Bus/Clock/Core ตรวจสอบพื้นฐาน
-- [ ] InProcEventBus: ทดสอบ publish ทั้งแบบ Event และ `(topic, data)`; wildcard `a.*`; queue_depth ต่อ topic 【8†source】
+- [ ] EventBus: ทดสอบ publish ทั้งแบบ Event และ `(topic, data)`; wildcard `a.*`; queue_depth ต่อ topic 【8†source】
 - [ ] BeatClock: ทดสอบ `ticks()` async ให้คาบเวลา ~ 1/hz และไม่ drift มาก 【8†source】
 - [ ] Dispatcher: route exact match และกรณีไม่พบ handler 【8†source】
 - [ ] RingBuffer: push/pop/peek และ capacity overflow 【8†source】

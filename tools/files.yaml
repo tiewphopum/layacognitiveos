@@ -1,7 +1,9 @@
 files:
   - ./scripts/__init__.py
   - ./scripts/demo_bootstrap.py
+  - ./scripts/demo_cam.py
   - ./scripts/demo_motion.py
+  - ./scripts/real_cam.py
   - ./src/layaos/__init__.py
   - ./src/layaos/adapters/storage.py
   - ./src/layaos/adapters/ws_hub.py
@@ -26,6 +28,7 @@ files:
   - ./src/layaos/tools/check_dupes.py
   - ./src/layaos/vision/motion_baseline.py
   - ./src/layaos/vision/motion_fullframe.py
+  - ./src/layaos/wire_config.py
   - ./tests/conftest.py
   - ./tests/test_backpressure.py
   - ./tests/test_bus_flow.py

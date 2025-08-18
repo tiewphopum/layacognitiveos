@@ -12,7 +12,7 @@ import argparse, time
 from typing import List, Dict, Any
 
 from layaos.core import log
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.clock import BeatClock
 from layaos.core.contracts import Event
 
@@ -44,7 +44,7 @@ def run(hz: float, seconds: float, topic: str = "state1.raw") -> None:
     lg = log.get("perf")
 
     # เตรียม bus/clock
-    bus = InProcEventBus()
+    bus = EventBus()
     bus.start()
 
     clk = BeatClock(hz=hz, name=f"clock.perf.{hz:g}")

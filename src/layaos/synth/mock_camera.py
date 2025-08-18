@@ -5,7 +5,7 @@ import numpy as np
 import time
 import asyncio
 from typing import Optional, Tuple, Any
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 
 BGRFrame = np.ndarray
 
@@ -26,7 +26,7 @@ class MockCamera:
     รองรับการรัน async และ publish frame event ไปยัง bus
     """
     def __init__(self, config: MockCamConfig = MockCamConfig(),
-                 bus: Optional[InProcEventBus] = None,
+                 bus: Optional[EventBus] = None,
                  topic_out: Optional[str] = None):
         self.cfg = config
         self.bus = bus

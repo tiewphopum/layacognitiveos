@@ -1,13 +1,13 @@
 # tests/test_metrics_dump.py
 from layaos.core import log
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.clock import BeatClock
 from layaos.core.contracts import Event
 import time
 
 def main():
     log.setup("INFO")
-    bus = InProcEventBus(); bus.start()
+    bus = EventBus(); bus.start()
 
     def c1(ev): pass
     bus.subscribe("a.b", c1)

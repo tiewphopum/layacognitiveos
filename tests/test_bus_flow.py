@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 
 class DummyEvent:
     def __init__(self, topic, payload):
@@ -11,7 +11,7 @@ class DummyEvent:
 
 @pytest.mark.asyncio
 async def test_bus_publish_topic_and_event_dual_api():
-    bus = InProcEventBus(maxlen=32)
+    bus = EventBus(maxlen=32)
 
     # โหมด 1: publish(topic, data)
     bus.publish("t.alpha", {"i": 1})
@@ -33,7 +33,7 @@ async def test_bus_publish_topic_and_event_dual_api():
 
 @pytest.mark.asyncio
 async def test_bus_concurrent_producers_single_consumer():
-    bus = InProcEventBus(maxlen=128)
+    bus = EventBus(maxlen=128)
     topic = "t.concurrent"
     N1, N2 = 25, 35
 
@@ -68,7 +68,7 @@ async def test_bus_concurrent_producers_single_consumer():
 
 @pytest.mark.asyncio
 async def test_bus_queue_depth_and_empty_try_consume():
-    bus = InProcEventBus(maxlen=8)
+    bus = EventBus(maxlen=8)
     assert bus.queue_depth("x") == 0
 
     bus.publish("x", {"a": 1})

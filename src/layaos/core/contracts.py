@@ -31,7 +31,7 @@ __all__ = [
 EventId = str
 
 
-# --------- Lightweight bus wrapper (for InProcEventBus) ---------
+# --------- Lightweight bus wrapper (for EventBus) ---------
 @dataclass(slots=True)
 class Event:
     """Simple bus envelope: a topic and its payload (data)."""

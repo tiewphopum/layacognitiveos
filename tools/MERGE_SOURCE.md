@@ -1,14 +1,14 @@
 # Merged Sources
 
 ## `./scripts/__init__.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/scripts/__init__.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/scripts/__init__.py`_
 
 ```python
 
 ```
 
 ## `./scripts/demo_bootstrap.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/scripts/demo_bootstrap.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/scripts/demo_bootstrap.py`_
 
 ```python
 import os
@@ -32,8 +32,263 @@ if __name__ == "__main__":
     main()
 ```
 
+## `./scripts/demo_cam.py`
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/scripts/demo_cam.py`_
+
+```python
+# scripts/demo_cam.py
+import os
+import time
+import signal
+import asyncio
+import argparse
+from statistics import median
+from typing import List, Optional
+
+from layaos.core import log
+from layaos.core.metrics import (
+    start_exporter, stop_exporter,
+    observe_hist, inc,
+)
+from layaos.pipeline.wire_minimal import build_pipeline
+
+# ใช้กล้องจริง (RTSP/Webcam)
+from scripts.real_cam import RtspCamera, WebcamCamera
+
+
+def _to_mapping(ev):
+    if isinstance(ev, dict):
+        return ev
+    payload = getattr(ev, "payload", None)
+    if isinstance(payload, dict):
+        return payload
+    d = getattr(ev, "__dict__", None)
+    if isinstance(d, dict):
+        return d
+    return {}
+
+
+def _extract_from_mapping(m, keys):
+    for k in keys:
+        if k in m:
+            return m[k]
+    return None
+
+
+def _find_motion_ratio(ev) -> float:
+    m = _to_mapping(ev)
+    candidates = ["motion_ratio", "ratio", "motion.ratio",
+                  "stats.motion_ratio", "metrics.motion_ratio"]
+    v = _extract_from_mapping(m, candidates)
+    if v is not None:
+        try:
+            return float(v)
+        except Exception:
+            pass
+    motion = m.get("motion") if isinstance(m.get("motion"), dict) else None
+    if motion and "ratio" in motion:
+        try:
+            return float(motion["ratio"])
+        except Exception:
+            pass
+    det = m.get("det") if isinstance(m.get("det"), dict) else None
+    if det:
+        v = _extract_from_mapping(det, candidates)
+        if v is not None:
+            try:
+                return float(v)
+            except Exception:
+                pass
+        motion = det.get("motion") if isinstance(det.get("motion"), dict) else None
+        if motion and "ratio" in motion:
+            try:
+                return float(motion["ratio"])
+            except Exception:
+                pass
+    for attr in ["motion_ratio", "ratio"]:
+        if hasattr(ev, attr):
+            try:
+                return float(getattr(ev, attr))
+            except Exception:
+                pass
+    return 0.0
+
+
+def _find_src_ts(ev) -> Optional[float]:
+    m = _to_mapping(ev)
+    for k in ["ts", "t0", "start_ts"]:
+        if k in m:
+            return m[k]
+    det = m.get("det") if isinstance(m.get("det"), dict) else None
+    if det:
+        for k in ["ts", "t0", "start_ts"]:
+            if k in det:
+                return det[k]
+    for attr in ["ts", "t0", "start_ts"]:
+        if hasattr(ev, attr):
+            return getattr(ev, attr)
+    return None
+
+
+async def amain():
+    # -------- args --------
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--rtsp", default=os.getenv("RTSP_URL"), help="RTSP url (override by env RTSP_URL)")
+    ap.add_argument("--device", type=int, default=None, help="Webcam device index (mac usually 0)")
+    ap.add_argument("--hz", type=float, default=12.0, help="Camera FPS for webcam (ignored for RTSP)")
+    ap.add_argument("--duration", type=float, default=20.0, help="Run seconds (Ctrl+C to stop earlier)")
+    ap.add_argument("--log-json", action="store_true", help="Log in JSON")
+    args = ap.parse_args()
+
+    # -------- logging / metrics --------
+    os.environ.setdefault("LOG_LEVEL", "INFO")
+    os.environ["LOG_JSON"] = "1" if args.log_json else os.environ.get("LOG_JSON", "0")
+    os.environ.setdefault("METRICS_INTERVAL", "5.0")
+
+    log.setup()
+    lg = log.get("demo.real_cam")
+
+    start_exporter(
+        interval_sec=float(os.getenv("METRICS_INTERVAL", "5.0")),
+        json_mode=(os.getenv("LOG_JSON", "0") == "1"),
+        logger=log.get("metrics"),
+    )
+
+    # -------- build pipeline --------
+    bus, _cam_stub, states = build_pipeline(cam_hz=args.hz)
+    bus.start()
+
+    # สตาร์ททุก state (สำคัญ!)
+    state_tasks = [asyncio.create_task(s.run()) for s in states]
+
+    # หา topic ขาเข้าของ S1 แบบไดนามิก
+    s1 = states[0] if states else None
+    s1_topic = (
+        getattr(s1, "in_topic", None)
+        or getattr(s1, "topic_in", None)
+        or "s1.img"
+    )
+
+    # -------- สรุปผลแบบง่าย --------
+    det_count = 0
+    motion_ratios: List[float] = []
+    end2end_ms: List[float] = []
+
+    def on_det(ev):
+        nonlocal det_count
+        det_count += 1
+        # debug ชั่วคราวให้เห็น payload 2 ครั้งแรก
+        on_det.debug_shown = getattr(on_det, "debug_shown", 0)
+        if on_det.debug_shown < 2:
+            m = _to_mapping(ev)
+            print("[DBG] det event keys:", sorted(list(m.keys()))[:20])
+            if isinstance(m.get("det"), dict):
+                print("[DBG] det payload keys:", sorted(list(m["det"].keys()))[:20])
+            if isinstance(m.get("motion"), dict):
+                print("[DBG] motion keys:", list(m["motion"].keys()))
+            on_det.debug_shown += 1
+
+        ratio = _find_motion_ratio(ev)
+        motion_ratios.append(ratio)
+
+        src_ts = _find_src_ts(ev)
+        if src_ts is not None and src_ts > 1e12:  # ns -> s
+            src_ts = src_ts / 1e9
+        now_s = time.time()
+        dt_ms = (now_s - float(src_ts)) * 1000.0 if src_ts is not None else 0.0
+        end2end_ms.append(dt_ms)
+
+        observe_hist("demo_e2e_ms", dt_ms, stage="s1_to_s6")
+        inc("demo_det_total", 1, topic="s3.det")
+
+    bus.subscribe("s3.det", on_det)
+
+    # รีเลย์เฟรมจาก topic กล้อง → S1 (อย่าฮาร์ดโค้ดผิด)
+    CAM_TOPIC = "cam/cam0.frame"
+
+    def _relay_to_s1(ev):
+        bus.publish(s1_topic, ev)
+
+    bus.subscribe(CAM_TOPIC, _relay_to_s1)
+
+    # debug: จำนวน subscribers
+    try:
+        cnt_cam = bus.count_subscribers(CAM_TOPIC)  # อาจไม่มี method นี้ในบาง impl
+    except Exception:
+        cnt_cam = None
+    try:
+        cnt_s1 = bus.count_subscribers(s1_topic)
+    except Exception:
+        cnt_s1 = None
+
+    if cnt_cam is not None:
+        lg.info("subscribers(%s)=%s", CAM_TOPIC, cnt_cam)
+    if cnt_s1 is not None:
+        lg.info("subscribers(%s)=%s", s1_topic, cnt_s1)
+
+    # -------- เลือกกล้อง --------
+    cam_task = None
+    if args.rtsp:
+        cam = RtspCamera(bus, url=args.rtsp, cam_id="cam0", hz=None)  # ปล่อยตาม stream
+        cam_task = asyncio.create_task(cam.run())
+    elif args.device is not None:
+        cam = WebcamCamera(bus, device=args.device, cam_id="cam0", hz=args.hz, topic=CAM_TOPIC)
+        cam_task = asyncio.create_task(cam.run())
+    else:
+        lg.error("no camera specified. Use --rtsp or --device")
+        return
+
+    # -------- graceful shutdown (Ctrl+C) --------
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        if not stop_event.is_set():
+            stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            # บางแพลตฟอร์ม (Windows) ไม่รองรับ add_signal_handler
+            pass
+
+    lg.info("real_cam demo start (%ss)", args.duration)
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=args.duration)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        # ปิดงาน
+        if cam_task:
+            cam_task.cancel()
+        for t in state_tasks:
+            t.cancel()
+        await asyncio.gather(*(state_tasks + ([cam_task] if cam_task else [])), return_exceptions=True)
+
+        # สรุป
+        valid = [r for r in motion_ratios if r > 0.0]
+        avg_ratio = (sum(valid) / len(valid)) if valid else 0.0
+        p50 = median(sorted(end2end_ms)) if end2end_ms else 0.0
+        processed = len(end2end_ms) or det_count
+
+        lg.info("=== REAL CAM SUMMARY ===")
+        lg.info("det_count=%d avg_ratio=%.4f p50_e2e_ms=%.2f", processed, avg_ratio, p50)
+
+        bus.stop()
+        stop_exporter()
+
+
+def main():
+    asyncio.run(amain())
+
+
+if __name__ == "__main__":
+    main()
+```
+
 ## `./scripts/demo_motion.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/scripts/demo_motion.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/scripts/demo_motion.py`_
 
 ```python
 import asyncio
@@ -48,7 +303,7 @@ from layaos.pipeline.wire_minimal import build_pipeline
 
 
 async def main():
-    # บูต logger + metrics
+    # บูต logger  metrics
     os.environ.setdefault("LOG_LEVEL", "INFO")
     os.environ.setdefault("LOG_JSON", "0")
     os.environ.setdefault("METRICS_INTERVAL", "5.0")
@@ -66,7 +321,7 @@ async def main():
     bus, cam, states = build_pipeline(cam_hz=12)
     bus.start()
     
-    s1_to_s3 = states[:3]
+    s1_to_s6 = states
 
     # เก็บสถิติแบบง่าย ๆ
     det_count = 0
@@ -77,7 +332,6 @@ async def main():
     t_start = time.perf_counter()
 
     # วางไว้ก่อน on_det
-    _seen_debug = 0
     def _to_mapping(ev):
         if isinstance(ev, dict):
             return ev
@@ -89,41 +343,72 @@ async def main():
             return d
         return {}
 
+    def _extract_from_mapping(m, keys):
+        for k in keys:
+            if k in m:
+                return m[k]
+        return None
+
     def _find_motion_ratio(ev):
         m = _to_mapping(ev)
-        candidates = [
-            "motion_ratio", "ratio", "motion.ratio",
-            "stats.motion_ratio", "metrics.motion_ratio",
-        ]
-        for k in candidates:
-            if k in m:
-                try:
-                    return float(m[k])
-                except Exception:
-                    pass
+        # try top-level first
+        candidates = ["motion_ratio", "ratio", "motion.ratio",
+                      "stats.motion_ratio", "metrics.motion_ratio"]
+        v = _extract_from_mapping(m, candidates)
+        if v is not None:
+            try: return float(v)
+            except Exception: pass
+        # try nested motion dict
         motion = m.get("motion") if isinstance(m.get("motion"), dict) else None
         if motion and "ratio" in motion:
-            try:
-                return float(m["ratio"])
-            except Exception:
-                pass
+            try: return float(motion["ratio"])
+            except Exception: pass
+        # NEW: try inside 'det' payload
+        det = m.get("det") if isinstance(m.get("det"), dict) else None
+        if det:
+            v = _extract_from_mapping(det, candidates)
+            if v is not None:
+                try: return float(v)
+                except Exception: pass
+            motion = det.get("motion") if isinstance(det.get("motion"), dict) else None
+            if motion and "ratio" in motion:
+                try: return float(motion["ratio"])
+                except Exception: pass
+        # attrs fallback
         for attr in ["motion_ratio", "ratio"]:
             if hasattr(ev, attr):
-                try:
-                    return float(getattr(ev, attr))
-                except Exception:
-                    pass
+                try: return float(getattr(ev, attr))
+                except Exception: pass
         return 0.0
 
+    def _find_src_ts(ev):
+        m = _to_mapping(ev)
+        # top-level first
+        for k in ["ts", "t0", "start_ts"]:
+            if k in m:
+                return m[k]
+        # NEW: inside det
+        det = m.get("det") if isinstance(m.get("det"), dict) else None
+        if det:
+            for k in ["ts", "t0", "start_ts"]:
+                if k in det:
+                    return det[k]
+        # attrs fallback
+        for attr in ["ts", "t0", "start_ts"]:
+            if hasattr(ev, attr):
+                return getattr(ev, attr)
+        return None
+    
     def on_det(ev):
         nonlocal det_count
         det_count += 1
 
-        # ใช้ attribute บนฟังก์ชันเป็นตัวนับ debug
         on_det.debug_shown = getattr(on_det, "debug_shown", 0)
         if on_det.debug_shown < 3:
             m = _to_mapping(ev)
             print("[DBG] det event keys:", sorted(list(m.keys()))[:20])
+            if isinstance(m.get("det"), dict):
+                print("[DBG] det payload keys:", sorted(list(m["det"].keys()))[:20])
             if isinstance(m.get("motion"), dict):
                 print("[DBG] det motion keys:", list(m["motion"].keys()))
             on_det.debug_shown += 1
@@ -131,26 +416,21 @@ async def main():
         ratio = _find_motion_ratio(ev)
         motion_ratios.append(ratio)
 
-        # e2e latency: ใช้ timestamp จาก event ถ้ามี
-        src_ts = (
-            getattr(ev, "ts", None)
-            or getattr(ev, "t0", None)
-            or getattr(ev, "start_ts", None)
-            or (_to_mapping(ev).get("ts"))
-        )
-        if src_ts is not None and src_ts > 1e12:  # เผื่อเป็น ns
+        src_ts = _find_src_ts(ev)
+        if src_ts is not None and src_ts > 1e12:  # ns -> s
             src_ts = src_ts / 1e9
         now_s = time.time()
         dt_ms = (now_s - float(src_ts)) * 1000.0 if src_ts is not None else 0.0
         end2end_ms.append(dt_ms)
 
-        observe_hist("demo_e2e_ms", dt_ms, stage="s1_to_s3")
+        observe_hist("demo_e2e_ms", dt_ms, stage="s1_to_s6")
         inc("demo_det_total", 1, topic="s3.det")
+    
     bus.subscribe("s3.det", on_det)
     
 
     # สปิน
-    tasks = [asyncio.create_task(s.run()) for s in s1_to_s3]
+    tasks = [asyncio.create_task(s.run()) for s in s1_to_s6]
     cam_task = asyncio.create_task(cam.run(n_frames=999999))  # ปล่อยไหล
 
     # รัน 20s
@@ -167,8 +447,10 @@ async def main():
         valid = [r for r in motion_ratios if r > 0.0]
         avg_ratio = (sum(valid) / len(valid)) if valid else 0.0
         p50 = median(sorted(end2end_ms)) if end2end_ms else 0.0
+        # Use the actual processed events count
+        processed = len(end2end_ms) or det_count
         lg.info("=== DEMO SUMMARY ===")
-        lg.info("det_count=%d avg_ratio=%.4f p50_e2e_ms=%.2f", det_count, avg_ratio, p50)
+        lg.info("det_count=%d avg_ratio=%.4f p50_e2e_ms=%.2f", processed, avg_ratio, p50)
         bus.stop()
         stop_exporter()
 
@@ -177,15 +459,117 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## `./scripts/real_cam.py`
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/scripts/real_cam.py`_
+
+```python
+# scripts/real_cam.py
+import cv2
+import asyncio
+import logging
+from layaos.core.bus import EventBus
+
+log = logging.getLogger("cam.real")
+
+class RtspCamera:
+    def __init__(self, bus: EventBus, url: str, cam_id="cam0", hz=None, topic="s1.img"):
+        self.bus = bus
+        self.url = url
+        self.cam_id = cam_id
+        self.hz = hz
+        self.topic = topic
+        self.cap = None
+        self.running = False
+
+    async def run(self, duration=None):
+        self.cap = cv2.VideoCapture(self.url)
+        if not self.cap.isOpened():
+            log.error(f"Cannot open RTSP stream: {self.url}")
+            return
+
+        log.info(f"rtsp cam start cam_id={self.cam_id} url={self.url} topic={self.topic}")
+        self.running = True
+
+        frame_count = 0
+        try:
+            while self.running:
+                ret, frame = self.cap.read()
+                if not ret:
+                    log.warning(f"Failed to read frame from {self.url}")
+                    break
+
+                await self.bus.publish(self.topic, {
+                    "cam": self.cam_id,
+                    "frame_id": frame_count,
+                    "img": frame
+                })
+                frame_count += 1
+
+                if self.hz:
+                    await asyncio.sleep(1 / self.hz)
+
+                if duration and frame_count >= duration * (self.hz or 30):
+                    break
+        finally:
+            self.cap.release()
+            self.running = False
+            log.info(f"rtsp cam stop cam_id={self.cam_id} frames={frame_count}")
+
+
+class WebcamCamera:
+    def __init__(self, bus: EventBus, device=0, cam_id="cam0", hz=None, topic="s1.img"):
+        self.bus = bus
+        self.device = device
+        self.cam_id = cam_id
+        self.hz = hz
+        self.topic = topic
+        self.cap = None
+        self.running = False
+
+    async def run(self, duration=None):
+        self.cap = cv2.VideoCapture(self.device)
+        if not self.cap.isOpened():
+            log.error(f"Cannot open webcam device {self.device}")
+            return
+
+        log.info(f"webcam start cam_id={self.cam_id} device={self.device} hz={self.hz} topic={self.topic}")
+        self.running = True
+
+        frame_count = 0
+        try:
+            while self.running:
+                ret, frame = self.cap.read()
+                if not ret:
+                    log.warning(f"Failed to read frame from device {self.device}")
+                    break
+
+                await self.bus.publish(self.topic, {
+                    "cam": self.cam_id,
+                    "frame_id": frame_count,
+                    "img": frame
+                })
+                frame_count += 1
+
+                if self.hz:
+                    await asyncio.sleep(1 / self.hz)
+
+                if duration and frame_count >= duration * (self.hz or 30):
+                    break
+        finally:
+            self.cap.release()
+            self.running = False
+            log.info(f"webcam stop cam_id={self.cam_id} frames={frame_count}")
+```
+
 ## `./src/layaos/__init__.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/__init__.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/__init__.py`_
 
 ```python
 
 ```
 
 ## `./src/layaos/adapters/storage.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/adapters/storage.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/adapters/storage.py`_
 
 ```python
 # src/layaos/adapters/storage.py
@@ -466,7 +850,7 @@ class LocalEventStorage:
 ```
 
 ## `./src/layaos/adapters/ws_hub.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/adapters/ws_hub.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/adapters/ws_hub.py`_
 
 ```python
 # src/layaos/adapters/ws_hub.py
@@ -552,7 +936,7 @@ class WSHubClient:
 ```
 
 ## `./src/layaos/core/buffer.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/buffer.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/buffer.py`_
 
 ```python
 # src/core/buffer.py
@@ -578,7 +962,7 @@ class RingBuffer:
 ```
 
 ## `./src/layaos/core/bus.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/bus.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/bus.py`_
 
 ```python
 # src/core/bus.py
@@ -750,7 +1134,7 @@ class EventBus:
 ```
 
 ## `./src/layaos/core/clock.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/clock.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/clock.py`_
 
 ```python
 from __future__ import annotations
@@ -860,7 +1244,7 @@ class BeatClock:
 ```
 
 ## `./src/layaos/core/contracts.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/contracts.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/contracts.py`_
 
 ```python
 
@@ -1058,7 +1442,7 @@ class ActionEvent(BaseEvent):
 ```
 
 ## `./src/layaos/core/dispatcher.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/dispatcher.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/dispatcher.py`_
 
 ```python
 # src/core/dispatcher.py
@@ -1081,14 +1465,14 @@ class Dispatcher:
 ```
 
 ## `./src/layaos/core/factory.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/factory.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/factory.py`_
 
 ```python
 
 ```
 
 ## `./src/layaos/core/log.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/log.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/log.py`_
 
 ```python
 
@@ -1185,7 +1569,7 @@ def set_level(level: str) -> None:
 ```
 
 ## `./src/layaos/core/metrics.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/metrics.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/metrics.py`_
 
 ```python
 
@@ -1472,7 +1856,7 @@ def force_emit(logger: Optional[logging.Logger] = None, json_mode: bool = False)
 ```
 
 ## `./src/layaos/core/ports.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/core/ports.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/core/ports.py`_
 
 ```python
 # src/layaos/core/ports.py
@@ -1497,7 +1881,7 @@ class HubClient(Protocol):
 ```
 
 ## `./src/layaos/pipeline/state_base.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state_base.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state_base.py`_
 
 ```python
 # src/layaos/pipeline/state_base.py
@@ -1551,7 +1935,7 @@ class PipelineState:
 ```
 
 ## `./src/layaos/pipeline/state1_sensor.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state1_sensor.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state1_sensor.py`_
 
 ```python
 from __future__ import annotations
@@ -1571,7 +1955,7 @@ class State1_Sensor(PipelineState):
 ```
 
 ## `./src/layaos/pipeline/state2_preproc.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state2_preproc.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state2_preproc.py`_
 
 ```python
 from __future__ import annotations
@@ -1590,7 +1974,7 @@ class State2_PreProc(PipelineState):
 ```
 
 ## `./src/layaos/pipeline/state3_perception.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state3_perception.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state3_perception.py`_
 
 ```python
 from __future__ import annotations
@@ -1600,6 +1984,8 @@ class State3_Perception(PipelineState):
     def __init__(self, *a, detector=None, **kw):
         super().__init__(*a, **kw)
         self.detector = detector
+        # ตัวนับสำหรับ downsample การส่ง event ออก เพื่อกันคิว s4.ctx ล้น
+        self._emit_counter = 0
 
     async def on_tick(self):
         if not self.cfg.topic_in:
@@ -1620,82 +2006,311 @@ class State3_Perception(PipelineState):
         if det is None:
             # สร้างอ็อบเจ็กต์เบาๆ ที่มีฟิลด์ที่เทส/โค้ดอื่นคาดหวัง
             class _Det:
-                any_motion = True
+                any_motion = False
                 cell_ratios = []
                 bboxes = []
                 meta = {}
             det = _Det()
 
         # 1) ท่อสำหรับเทสภายใน
-        if self.cfg.topic_out:
-            await self.emit(self.cfg.topic_out, {"ts": ts, "det": det})
+        # เติม motion_ratio ให้อยู่ระดับ top-level เพื่อให้ consumer อ่านง่าย
+        motion_ratio = 0.0
+        try:
+            if isinstance(det, dict):
+                if "motion_ratio" in det:
+                    motion_ratio = float(det["motion_ratio"])
+                else:
+                    motion = det.get("motion") if isinstance(det.get("motion"), dict) else None
+                    if motion and "ratio" in motion:
+                        motion_ratio = float(motion["ratio"])
+            else:
+                if hasattr(det, "motion_ratio"):
+                    motion_ratio = float(getattr(det, "motion_ratio"))
+                elif hasattr(det, "cell_ratios"):
+                    cr = getattr(det, "cell_ratios") or []
+                    if isinstance(cr, (list, tuple)) and len(cr) > 0:
+                        motion_ratio = float(sum(cr) / len(cr))
+        except Exception:
+            pass
 
-        # 2) ท่อ production-style ให้เหมือนลอกเดิม
-        any_motion = bool(getattr(det, "any_motion", False))
-        cell_ratios = getattr(det, "cell_ratios", []) or []
-        score = float(any_motion) if any_motion else float(sum(cell_ratios))
-        self.bus.publish("state3.trigger", {"score": score, "obj": "motion"})
+        # downsample การ emit เพื่อลด backlog ที่ s4.ctx (ตั้งค่าได้ผ่าน cfg.every_n)
+        every_n = int(getattr(self.cfg, "every_n", 3) or 3)
+        self._emit_counter = (self._emit_counter + 1) % every_n
+        should_emit = (self._emit_counter == 0)
+        if self.cfg.topic_out and should_emit:
+            await self.emit(
+                self.cfg.topic_out,
+                {"ts": ts, "det": det, "motion_ratio": motion_ratio},
+            )
+
+        # 2) ท่อ production-style: ยึด motion_ratio เป็นตัวชี้วัดเดียว
+        score = float(motion_ratio)
+        if should_emit:
+            self.bus.publish("state3.trigger", {"score": score, "obj": "motion"})
 ```
 
 ## `./src/layaos/pipeline/state4_context.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state4_context.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state4_context.py`_
 
 ```python
 # src/layaos/pipeline/state4_context.py
 from __future__ import annotations
+
+from typing import Any, Iterable, Optional
+
 from layaos.pipeline.state_base import PipelineState
 
+
 class State4_Context(PipelineState):
+    """
+    - ดึงเหตุการณ์จาก S3 เป็นชุด (burst-drain) ต่อหนึ่ง tick เพื่อไม่ให้คิว s3.det ค้าง
+    - คำนวณ EMA (exponential moving average) ของ motion_ratio แล้วแนบเป็น ctx ก่อนส่งออก
+    """
+
+    def __init__(
+        self,
+        *a,
+        batch_size: int = 32,
+        alpha: float = 0.2,
+        **kw,
+    ):
+        """
+        :param batch_size: จำนวนเหตุการณ์สูงสุดที่จะดึงจากคิวต่อหนึ่ง tick
+        :param alpha: smoothing factor ของ EMA (0 < alpha <= 1), ค่ายิ่งสูงยิ่งไวต่อการเปลี่ยนแปลง
+        """
+        super().__init__(*a, **kw)
+        self.batch_size = int(batch_size)
+        self.alpha = float(alpha)
+        self._ema: Optional[float] = None  # เก็บค่า EMA ล่าสุด
+
+    # ---------- helpers ----------
+    def _extract_ratio(self, evt: Any) -> float:
+        """
+        อ่านค่า motion_ratio จาก payload รูปแบบที่เป็นไปได้:
+        - dict: {"ts": ..., "det": {...}} หรือ {"motion_ratio": ...}
+        - object: มีแอททริบิวต์ det / motion_ratio / ratio / cells
+        - fallback: เฉลี่ยจาก cells[].ratio
+        """
+        det = None
+        if isinstance(evt, dict):
+            det = evt.get("det", evt)
+        else:
+            det = getattr(evt, "det", evt)
+
+        # ลองอ่านคีย์ตรง ๆ ก่อน
+        for k in ("motion_ratio", "ratio"):
+            v = None
+            if isinstance(det, dict):
+                v = det.get(k)
+            else:
+                v = getattr(det, k, None)
+            if v is not None:
+                try:
+                    return float(v)
+                except Exception:
+                    pass
+
+        # fallback: เฉลี่ยจาก cells / cell_ratios
+        cells = []
+        if isinstance(det, dict):
+            cells = det.get("cells") or det.get("cell_ratios") or []
+        else:
+            cells = getattr(det, "cells", []) or getattr(det, "cell_ratios", [])
+
+        vals: list[float] = []
+        for c in cells:
+            try:
+                if isinstance(c, dict):
+                    vals.append(float(c.get("ratio", 0.0)))
+                else:
+                    vals.append(float(getattr(c, "ratio", 0.0)))
+            except Exception:
+                continue
+        if vals:
+            return sum(vals) / len(vals)
+
+        return 0.0
+
+    def _update_ema(self, x: float) -> float:
+        if self._ema is None:
+            self._ema = x
+        else:
+            self._ema = self.alpha * x + (1.0 - self.alpha) * self._ema
+        return self._ema
+
+    # ---------- main ----------
     async def on_tick(self):
-        if self.cfg.topic_in:
+        if not self.cfg.topic_in:
+            return
+
+        processed = 0
+        for _ in range(self.batch_size):
             evt = await self.bus.try_consume(self.cfg.topic_in)
             if evt is None:
-                return
-            # TODO: fuse context / tracking / temporal smoothing
+                break
+
+            ratio = self._extract_ratio(evt)
+            ratio_ema = self._update_ema(ratio)
+
+            # สร้างคอนเท็กซ์แล้วแนบกลับไปใน event
+            ctx_payload = {
+                "ts": getattr(evt, "ts", None) if not isinstance(evt, dict) else evt.get("ts"),
+                "det": evt.get("det", evt) if isinstance(evt, dict) else getattr(evt, "det", evt),
+                "ctx": {
+                    "ratio_ema": ratio_ema,
+                    "ratio_now": ratio,
+                    "alpha": self.alpha,
+                },
+            }
+
             if self.cfg.topic_out:
-                await self.emit(self.cfg.topic_out, evt)
+                await self.emit(self.cfg.topic_out, ctx_payload)
+
+            processed += 1
+
+        # (ถ้าต้องการ) สามารถบันทึก metrics จำนวนที่ประมวลผลต่อ tick ได้ที่นี่ เช่น:
+        # inc_counter("s4_batch_processed", processed)
 ```
 
 ## `./src/layaos/pipeline/state5_imagination.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state5_imagination.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state5_imagination.py`_
 
 ```python
 # src/layaos/pipeline/state5_imagination.py
 from __future__ import annotations
 from layaos.pipeline.state_base import PipelineState
 
+
 class State5_Imagination(PipelineState):
+    def __init__(self, cfg, bus, batch_size: int = 1, **kwargs):
+        # อย่าส่ง batch_size ไปให้ super().__init__ เพื่อกัน unexpected kw
+        super().__init__(cfg, bus)
+        try:
+            self.batch_size = max(1, int(batch_size))
+        except Exception:
+            self.batch_size = 1
+
     async def on_tick(self):
         if self.cfg.topic_in:
             evt = await self.bus.try_consume(self.cfg.topic_in)
             if evt is None:
                 return
-            # TODO: hypothesis/forecast/what-if
+            # TODO: hypothesis/forecast/what-if (สามารถใช้ self.batch_size ในอนาคต)
             if self.cfg.topic_out:
                 await self.emit(self.cfg.topic_out, evt)
 ```
 
 ## `./src/layaos/pipeline/state6_action.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/state6_action.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/state6_action.py`_
 
 ```python
 # src/layaos/pipeline/state6_action.py
 from __future__ import annotations
+
+import time
+from typing import Any, Iterable
+
 from layaos.pipeline.state_base import PipelineState
+from layaos.adapters.storage import LocalEventStorage, StorageConfig
+from layaos.core.contracts import ActionEvent
+
 
 class State6_Action(PipelineState):
+    def __init__(
+        self,
+        *a,
+        storage: LocalEventStorage | None = None,
+        ratio_thr: float = 0.01,
+        **kw,
+    ):
+        """
+        :param storage: LocalEventStorage สำหรับบันทึกเหตุการณ์แอ็กชัน (optional)
+        :param ratio_thr: เกณฑ์ motion_ratio ที่จะถือว่า 'ทริกเกอร์'
+        """
+        super().__init__(*a, **kw)
+        self.storage = storage
+        self.ratio_thr = float(ratio_thr)
+        if self.storage:
+            # start worker thread ของ AsyncStorage ภายใน LocalEventStorage
+            self.storage.start()
+
+    def _extract_ratio(self, evt: Any) -> float:
+        """
+        พยายามอ่านค่า motion ratio จากรูปแบบ payload ที่เป็นไปได้:
+        - dict: {"ts": ..., "det": {...}} หรือ {"motion_ratio": ...}
+        - object: มีแอททริบิวต์ det / motion_ratio / ratio / cells
+        - fallback: เฉลี่ยจาก cells[].ratio
+        """
+        # 1) ดึง det ออกมาก่อน
+        det = None
+        if isinstance(evt, dict):
+            det = evt.get("det", evt)
+        else:
+            det = getattr(evt, "det", evt)
+
+        # 2) ลองอ่านคีย์ตรง ๆ
+        for k in ("motion_ratio", "ratio"):
+            v = None
+            if isinstance(det, dict):
+                v = det.get(k)
+            else:
+                v = getattr(det, k, None)
+            if v is not None:
+                try:
+                    return float(v)
+                except Exception:
+                    pass
+
+        # 3) เฉลี่ยจาก cells / cell_ratios
+        cells = []
+        if isinstance(det, dict):
+            cells = det.get("cells") or det.get("cell_ratios") or []
+        else:
+            cells = getattr(det, "cells", []) or getattr(det, "cell_ratios", [])
+
+        vals: list[float] = []
+        for c in cells:
+            try:
+                if isinstance(c, dict):
+                    vals.append(float(c.get("ratio", 0.0)))
+                else:
+                    vals.append(float(getattr(c, "ratio", 0.0)))
+            except Exception:
+                continue
+        if vals:
+            return sum(vals) / len(vals)
+
+        return 0.0
+
     async def on_tick(self):
-        if self.cfg.topic_in:
-            evt = await self.bus.try_consume(self.cfg.topic_in)
-            if evt is None:
-                return
-            # TODO: map to ActionEvent / actuator / outbound
-            # ไม่มี topic_out ก็จบสาย
-            pass
+        if not self.cfg.topic_in:
+            return
+
+        evt = await self.bus.try_consume(self.cfg.topic_in)
+        if evt is None:
+            return
+
+        ratio = self._extract_ratio(evt)
+
+        # ทริกเกอร์เมื่อเกิน threshold
+        if ratio >= self.ratio_thr and self.storage:
+            ae = ActionEvent(
+                ts=time.time(),
+                action="alert",
+                target=None,
+                params={
+                    "reason": "motion",
+                    "motion_ratio": ratio,
+                    "state": self.cfg.name,
+                },
+            )
+            # เขียนเป็น JSON event ลงโฟลเดอร์ data/act/
+            self.storage.put_json("act", ae.to_dict())
+        # ไม่มี topic_out ก็จบสายตามดีไซน์
 ```
 
 ## `./src/layaos/pipeline/wire_minimal.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/pipeline/wire_minimal.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/pipeline/wire_minimal.py`_
 
 ```python
 # src/layaos/pipeline/wire_minimal.py
@@ -1713,13 +2328,23 @@ from layaos.vision.motion_fullframe import MotionFullFrame
 from layaos.vision.motion_baseline import MotionBaselineConfig
 from layaos.synth.mock_camera import MockCamConfig, MockCamera
 
+# ★ เพิ่ม: storage สำหรับ ActionEvent
+from layaos.adapters.storage import LocalEventStorage, StorageConfig
+
 
 def build_pipeline(cam_hz: int = 12):
     bus = EventBus(maxlen=256)
 
+    # สร้าง storage หนึ่งตัวใช้ร่วมกันทั้งท่อ
+    storage = LocalEventStorage(StorageConfig(out_dir="data", prefix="evt"))
+    # หมายเหตุ: State6_Action จะ start() storage ให้เองถ้าถูกส่งเข้าไป
+
     # Mock camera publishes frames to cam/0.frame
-    cam = MockCamera(MockCamConfig(hz=cam_hz, width=128, height=96, rect_w=20, rect_h=20, speed_px=4),
-                     bus=bus, topic_out="cam/0.frame")
+    cam = MockCamera(
+        MockCamConfig(hz=cam_hz, width=128, height=96, rect_w=20, rect_h=20, speed_px=4),
+        bus=bus,
+        topic_out="cam/0.frame",
+    )
 
     # State wiring
     s1 = State1_Sensor(StateConfig("S1", "cam/0.frame", "s1.raw", hz=cam_hz), bus)
@@ -1727,11 +2352,9 @@ def build_pipeline(cam_hz: int = 12):
 
     det = MotionFullFrame(MotionBaselineConfig())
     s3 = State3_Perception(StateConfig("S3", "s2.pre", "s3.det", hz=cam_hz), bus, detector=det)
-
-    s4 = State4_Context(StateConfig("S4", "s3.det", "s4.ctx", hz=2), bus)
-    s5 = State5_Imagination(StateConfig("S5", "s4.ctx", "s5.img", hz=1), bus)
-    s6 = State6_Action(StateConfig("S6", "s5.img", None, hz=2), bus)
-
+    s4 = State4_Context(StateConfig("S4", "s3.det", "s4.ctx", hz=12), bus)
+    s5 = State5_Imagination(StateConfig("S5", "s4.ctx", "s5.img", hz=6), bus, batch_size=16)
+    s6 = State6_Action(StateConfig("S6", "s5.img", None, hz=6), bus)
     return bus, cam, [s1, s2, s3, s4, s5, s6]
 
 
@@ -1749,7 +2372,7 @@ async def run_pipeline(seconds: float = 2.0, cam_hz: int = 12):
 ```
 
 ## `./src/layaos/synth/mock_camera.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/synth/mock_camera.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/synth/mock_camera.py`_
 
 ```python
 # src/layaos/synth/mock_camera.py
@@ -1824,7 +2447,7 @@ class MockCamera:
 ```
 
 ## `./src/layaos/tools/check_dupes.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/tools/check_dupes.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/tools/check_dupes.py`_
 
 ```python
 import ast, pathlib, collections
@@ -1853,7 +2476,7 @@ print("OK: no duplicate symbols in non-legacy modules.")
 ```
 
 ## `./src/layaos/vision/motion_baseline.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/vision/motion_baseline.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/vision/motion_baseline.py`_
 
 ```python
 # src/vision/motion_baseline.py
@@ -1906,7 +2529,7 @@ class MotionBaseline:
 ```
 
 ## `./src/layaos/vision/motion_fullframe.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/src/layaos/vision/motion_fullframe.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/vision/motion_fullframe.py`_
 
 ```python
 
@@ -2075,8 +2698,65 @@ class MotionFullFrame:
         return det
 ```
 
+## `./src/layaos/wire_config.py`
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/src/layaos/wire_config.py`_
+
+```python
+# src/layaos/wire_config.py
+from __future__ import annotations
+import importlib
+from types import SimpleNamespace
+from pathlib import Path
+from typing import Any, Dict, Tuple, List
+
+try:
+    import yaml  # PyYAML
+except ImportError as e:
+    raise RuntimeError("Please install PyYAML: pip install pyyaml") from e
+
+from layaos.core.bus import Bus  # ปรับให้ตรงกับที่โปรเจกต์คุณใช้จริง
+
+def _imp(module: str, cls: str):
+    mod = importlib.import_module(module)
+    return getattr(mod, cls)
+
+def _mk_cfg(d: Dict[str, Any]):
+    # ให้ state ใช้งาน .cfg.foo ได้ (เหมือนเดิม)
+    return SimpleNamespace(**(d or {}))
+
+def build_from_yaml(yaml_path: str) -> Tuple[Bus, List[Any]]:
+    """อ่าน pipeline.yaml แล้วประกอบ bus/detector/states ให้พร้อมใช้งาน"""
+    data = yaml.safe_load(Path(yaml_path).read_text(encoding="utf-8"))
+
+    # bus
+    bus_cfg = data.get("bus", {}) or {}
+    bus = Bus(daemon=bool(bus_cfg.get("daemon", True)))
+
+    # detector (ถ้ามี)
+    detector = None
+    det_cfg = data.get("detector")
+    if det_cfg:
+        DetCls = _imp(det_cfg["module"], det_cfg["class"])
+        det_args = det_cfg.get("args") or {}
+        detector = DetCls(**det_args)
+
+    # states
+    states = []
+    for s in data.get("states", []):
+        StateCls = _imp(s["module"], s["class"])
+        cfg = _mk_cfg(s.get("cfg") or {})
+        # ส่วนใหญ่ฐาน PipelineState รับ (cfg, bus), บางตัวเช่น s3 ต้องการ detector
+        if "Perception" in s["class"]:
+            instance = StateCls(cfg, bus, detector=detector)
+        else:
+            instance = StateCls(cfg, bus)
+        states.append(instance)
+
+    return bus, states
+```
+
 ## `./tests/conftest.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/conftest.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/conftest.py`_
 
 ```python
 
@@ -2103,7 +2783,7 @@ def _bootstrap_logging_and_metrics():
 ```
 
 ## `./tests/test_backpressure.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_backpressure.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_backpressure.py`_
 
 ```python
 import asyncio
@@ -2163,7 +2843,7 @@ async def test_backpressure_resilience():
 ```
 
 ## `./tests/test_bus_flow.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_bus_flow.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_bus_flow.py`_
 
 ```python
 import asyncio
@@ -2255,7 +2935,7 @@ async def test_bus_queue_depth_and_empty_try_consume():
 ```
 
 ## `./tests/test_camera_to_bus.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_camera_to_bus.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_camera_to_bus.py`_
 
 ```python
 # tests/test_camera_to_bus.py
@@ -2292,7 +2972,7 @@ def test_camera_to_bus():
 ```
 
 ## `./tests/test_fault_tolerance.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_fault_tolerance.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_fault_tolerance.py`_
 
 ```python
 
@@ -2323,7 +3003,7 @@ def test_fault_tolerance_random_exceptions():
 ```
 
 ## `./tests/test_graceful_shutdown.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_graceful_shutdown.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_graceful_shutdown.py`_
 
 ```python
 
@@ -2355,7 +3035,7 @@ def test_graceful_shutdown():
 ```
 
 ## `./tests/test_latency_metrics.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_latency_metrics.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_latency_metrics.py`_
 
 ```python
 import asyncio
@@ -2411,7 +3091,7 @@ async def test_latency_metrics_smoke():
 ```
 
 ## `./tests/test_metrics_dump.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_metrics_dump.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_metrics_dump.py`_
 
 ```python
 # tests/test_metrics_dump.py
@@ -2445,7 +3125,7 @@ def test_step1():
 ```
 
 ## `./tests/test_metrics_exporter_smoke.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_metrics_exporter_smoke.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_metrics_exporter_smoke.py`_
 
 ```python
 # tests/test_metrics_exporter_smoke.py
@@ -2481,7 +3161,7 @@ def test_metrics_exporter_emits_logs(caplog):
 ```
 
 ## `./tests/test_motion_pipeline.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_motion_pipeline.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_motion_pipeline.py`_
 
 ```python
 # tests/test_motion_pipeline.py
@@ -2533,7 +3213,7 @@ async def test_motion_detection_from_mock_camera():
 ```
 
 ## `./tests/test_orchestra_min.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_orchestra_min.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_orchestra_min.py`_
 
 ```python
 # tests/test_orchestra_min.py
@@ -2565,7 +3245,7 @@ async def test_orchestra_min_runs_without_errors():
 ```
 
 ## `./tests/test_perf_basics.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_perf_basics.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_perf_basics.py`_
 
 ```python
 # tests/test_perf_basics.py
@@ -2705,7 +3385,7 @@ def test_step1():
 ```
 
 ## `./tests/test_pipeline_min.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_pipeline_min.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_pipeline_min.py`_
 
 ```python
 # tests/test_pipeline_min.py
@@ -2756,7 +3436,7 @@ def test_step1():
 ```
 
 ## `./tests/test_pipeline_motion_demo.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_pipeline_motion_demo.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_pipeline_motion_demo.py`_
 
 ```python
 # tests/test_pipeline_motion_demo.py
@@ -2855,7 +3535,7 @@ def test_step1():
 ```
 
 ## `./tests/test_pipeline_s13_detection.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_pipeline_s13_detection.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_pipeline_s13_detection.py`_
 
 ```python
 # tests/test_pipeline_s13_detection.py
@@ -2895,7 +3575,7 @@ async def test_pipeline_emits_s3_detection():
 ```
 
 ## `./tests/test_semantic_memory.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_semantic_memory.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_semantic_memory.py`_
 
 ```python
 # tests/test_semantic_memory.py
@@ -2951,7 +3631,7 @@ def test_list_and_search(sem: SemanticMemory):
 ```
 
 ## `./tests/test_storage_roundtrip.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_storage_roundtrip.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_storage_roundtrip.py`_
 
 ```python
 
@@ -2987,7 +3667,7 @@ def test_storage_roundtrip(tmp_path: Path):
 ```
 
 ## `./tests/test_ws_roundtrip.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tests/test_ws_roundtrip.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tests/test_ws_roundtrip.py`_
 
 ```python
 
@@ -3040,7 +3720,7 @@ async def test_ws_roundtrip():
 ```
 
 ## `./tools/merge_sources.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tools/merge_sources.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tools/merge_sources.py`_
 
 ```python
 #!/usr/bin/env python3
@@ -3183,7 +3863,7 @@ if __name__ == "__main__":
 ```
 
 ## `./tools/summarize_symbols.py`
-_Source: `/Users/sgndev003/development/GitHub/layaos/tools/summarize_symbols.py`_
+_Source: `/Users/sgndev003/development/GitHub/layacognitiveos/tools/summarize_symbols.py`_
 
 ```python
 #!/usr/bin/env python3

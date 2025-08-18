@@ -1,13 +1,38 @@
 # Symbols Summary
 
-- Root: `/Users/sgndev003/development/GitHub/layaos`
+- Root: `/Users/sgndev003/development/GitHub/layacognitiveos`
+
+## `scripts/__init__.py`
+
+## `scripts/demo_bootstrap.py`
+
+**Functions**
+
+- `main`
+
+## `scripts/demo_cam.py`
+
+**Functions**
+
+- `_to_mapping`
+- `_extract_from_mapping`
+- `_find_motion_ratio`
+- `_find_src_ts`
+- `amain`
+- `main`
 
 ## `scripts/demo_motion.py`
 
 **Functions**
 
-- `parse_args`
 - `main`
+
+## `scripts/real_cam.py`
+
+**Classes**
+
+- `RtspCamera` (init: bus, url, cam_id='cam0', hz=None, topic='s1.img')
+- `WebcamCamera` (init: bus, device=0, cam_id='cam0', hz=None, topic='s1.img')
 
 ## `src/layaos/__init__.py`
 
@@ -15,12 +40,13 @@
 
 **Classes**
 
+- `AsyncStorage` (init: out_dir='data', max_queue=1024, prefix='evt')
 - `StorageConfig`
-- `LocalEventStorage` (init: cfg=…)
+- `LocalEventStorage` (init: cfg, logger=None)
 
 **Functions**
 
-- `_safe_for_name`
+- `_to_jsonable`
 
 ## `src/layaos/adapters/ws_hub.py`
 
@@ -52,7 +78,13 @@
 **Classes**
 
 - `Event`
-- `DataPackage`
+- `BBox`
+- `CellStat`
+- `BaseEvent`
+- `FrameEvent`
+- `DetectionEvent`
+- `ReasonEvent`
+- `ActionEvent`
 
 ## `src/layaos/core/dispatcher.py`
 
@@ -60,28 +92,56 @@
 
 - `Dispatcher`
 
+## `src/layaos/core/factory.py`
+
 ## `src/layaos/core/log.py`
+
+**Classes**
+
+- `JsonHandler`
 
 **Functions**
 
+- `_maybe_load_dotenv`
 - `setup`
 - `get`
-- `_to_level`
+- `set_level`
 
 ## `src/layaos/core/metrics.py`
 
+**Classes**
+
+- `_Base`
+- `Counter` (init: name, labels)
+- `Gauge` (init: name, labels)
+- `Histogram` (init: name, labels, maxlen=2048)
+- `_Registry`
+- `_Exporter` (init: interval_sec=5.0, json_mode=False, logger=None)
+- `Timer` (init: hist_name)
+
 **Functions**
 
-- `_nlabels`
-- `_key`
+- `_labels_key`
+- `_pct`
+- `inc_counter`
+- `set_gauge`
+- `observe_hist`
 - `inc`
 - `gauge_set`
-- `observe_hist`
+- `start_exporter`
+- `stop_exporter`
 - `snapshot`
-- `reset`
-- `counter`
-- `gauge`
-- `hist`
+- `snapshot_all`
+- `force_emit`
+
+## `src/layaos/core/ports.py`
+
+**Classes**
+
+- `CameraSource`
+- `MotionDetector`
+- `StorageSink`
+- `HubClient`
 
 ## `src/layaos/pipeline/state1_sensor.py`
 
@@ -111,7 +171,7 @@
 
 **Classes**
 
-- `State5_Imagination`
+- `State5_Imagination` (init: cfg, bus, batch_size=1)
 
 ## `src/layaos/pipeline/state6_action.py`
 
@@ -153,10 +213,31 @@
 
 **Classes**
 
-- `DetectionEvent`
-- `MotionFullFrame` (init: cfg)
+- `MotionFullFrame` (init: cfg, cam_id='cam0')
+
+**Functions**
+
+- `_get`
+
+## `src/layaos/wire_config.py`
+
+**Functions**
+
+- `_imp`
+- `_mk_cfg`
+- `build_from_yaml`
 
 ## `tests/conftest.py`
+
+**Functions**
+
+- `_bootstrap_logging_and_metrics`
+
+## `tests/test_backpressure.py`
+
+**Functions**
+
+- `test_backpressure_resilience`
 
 ## `tests/test_bus_flow.py`
 
@@ -176,11 +257,23 @@
 
 - `test_camera_to_bus`
 
-## `tests/test_frame.py`
+## `tests/test_fault_tolerance.py`
 
 **Functions**
 
-- `test_basic`
+- `test_fault_tolerance_random_exceptions`
+
+## `tests/test_graceful_shutdown.py`
+
+**Functions**
+
+- `test_graceful_shutdown`
+
+## `tests/test_latency_metrics.py`
+
+**Functions**
+
+- `test_latency_metrics_smoke`
 
 ## `tests/test_metrics_dump.py`
 
@@ -188,6 +281,12 @@
 
 - `main`
 - `test_step1`
+
+## `tests/test_metrics_exporter_smoke.py`
+
+**Functions**
+
+- `test_metrics_exporter_emits_logs`
 
 ## `tests/test_motion_pipeline.py`
 
@@ -234,17 +333,38 @@
 
 - `test_pipeline_emits_s3_detection`
 
-## `tests/test_storage.py`
+## `tests/test_semantic_memory.py`
 
 **Functions**
 
-- `test_step1`
+- `sem`
+- `test_add_and_get`
+- `test_learn_overwrite`
+- `test_exists_and_remove`
+- `test_list_and_search`
+
+## `tests/test_storage_roundtrip.py`
+
+**Functions**
+
+- `test_storage_roundtrip`
 
 ## `tests/test_ws_roundtrip.py`
 
 **Functions**
 
 - `test_ws_roundtrip`
+
+## `tools/merge_sources.py`
+
+**Functions**
+
+- `load_config`
+- `guess_lang`
+- `read_file_text`
+- `render_md`
+- `render_plain`
+- `main`
 
 ## `tools/summarize_symbols.py`
 

@@ -1,13 +1,13 @@
 # tests/test_pipeline_min.py
 from layaos.core import log
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.clock import BeatClock
 from layaos.core.contracts import Event
 from collections import Counter
 
 def main():
     log.setup("DEBUG")
-    bus = InProcEventBus()
+    bus = EventBus()
     bus.start()
 
     ev_count = Counter()

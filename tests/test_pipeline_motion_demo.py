@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from layaos.core import log
-from layaos.core.bus import InProcEventBus
+from layaos.core.bus import EventBus
 from layaos.core.clock import BeatClock
 from layaos.core.contracts import Event
 
@@ -36,7 +36,7 @@ def main():
     lg_s2 = log.get("state2")
     lg_s3 = log.get("state3")
 
-    bus = InProcEventBus(); bus.start()
+    bus = EventBus(); bus.start()
 
     cam = MockCamera(MockCamConfig(width=320, height=240, rect_w=40, rect_h=40, speed_px=5))
     motion = MotionBaseline(MotionBaselineConfig(diff_threshold=18, min_ratio_trigger=0.01))
